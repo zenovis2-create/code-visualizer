@@ -1,0 +1,9 @@
+{
+  "name": "paperclip-mini",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @paperclipai/server dev",
+    "build": "pnpm -r build"
+  }
+}
