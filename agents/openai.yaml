@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Visualizer"
+  short_description: "Translate code changes and project structure into non-developer explanations and visuals"
+  default_prompt: "Use $code-visualizer to explain what was built or changed in plain language and return a localhost visual guide."

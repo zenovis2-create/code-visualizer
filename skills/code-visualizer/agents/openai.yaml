@@ -1,4 +1,0 @@
-interface:
-  display_name: "Code Visualizer"
-  short_description: "Generate a localhost HTML visualization for code changes, subsystems, or whole repos"
-  default_prompt: "Use $code-visualizer to turn this code change or project area into a local HTML visualization and return the localhost URL."

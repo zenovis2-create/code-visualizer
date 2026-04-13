@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>__TITLE__</title>
+    <style>
+__STYLE__
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="hero">
+        <p class="eyebrow">Code Visualizer</p>
+        <h1>__TITLE__</h1>
+        <p class="lead">__LEAD__</p>
+        <div class="hero-grid">
+          <section class="hero-card">
+            <h2>지금 한 일 한눈에</h2>
+            <p>__WHAT_NOW__</p>
+          </section>
+          <section class="hero-card">
+            <h2>이 프로젝트가 하는 일</h2>
+            <p>__PROJECT_PURPOSE__</p>
+          </section>
+        </div>
+      </header>
+
+      <section class="section">
+        <h2>전에는 / 지금은</h2>
+        <div class="compare-grid">
+          <article class="compare before">
+            <h3>전에는</h3>
+            <p>__BEFORE__</p>
+          </article>
+          <article class="compare now">
+            <h3>지금은</h3>
+            <p>__NOW__</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>사용자 입장에서 달라진 점</h2>
+        <ul class="bullet-list">
+          __USER_IMPACT_ITEMS__
+        </ul>
+      </section>
+
+      <section class="section">
+        <h2>기능 지도</h2>
+        <table class="feature-table">
+          <thead>
+            <tr>
+              <th>기능 이름</th>
+              <th>사용자가 느끼는 역할</th>
+              <th>관련 화면/처리</th>
+              <th>대표 파일</th>
+            </tr>
+          </thead>
+          <tbody>
+            __CAPABILITY_ROWS__
+          </tbody>
+        </table>
+      </section>
+
+      <section class="section">
+        <h2>용어 번역</h2>
+        <table class="term-table">
+          <thead>
+            <tr>
+              <th>기술 용어</th>
+              <th>쉬운 말</th>
+            </tr>
+          </thead>
+          <tbody>
+            __TERM_ROWS__
+          </tbody>
+        </table>
+      </section>
+
+      <section class="section">
+        <h2>더 깊게 보기</h2>
+        <details class="details-block">
+          <summary>대표 파일 훑어보기</summary>
+          <ul class="deep-links">
+            __FILE_LINK_ITEMS__
+          </ul>
+        </details>
+        <details class="details-block">
+          <summary>기능 상세 보기</summary>
+          <ul class="deep-links">
+            __FEATURE_LINK_ITEMS__
+          </ul>
+        </details>
+      </section>
+
+      <section class="pin-board-shell">
+        <div class="pin-board-head">
+          <h2>핀 보드</h2>
+          <p>중요한 작업과 파일을 다시 열 수 있습니다.</p>
+        </div>
+        <ul id="pin-board-list" class="pin-board-list"></ul>
+        <p id="pin-board-empty" class="pin-board-empty">아직 핀된 항목이 없습니다.</p>
+      </section>
+
+      <section class="progress-shell">
+        <div class="progress-head">
+          <h2>작업 진행 요약</h2>
+          <p>작업 상세 페이지에서 체크한 상태를 모아 보여줍니다.</p>
+        </div>
+        <ul id="task-progress-list" class="task-progress-list"></ul>
+        <p id="task-progress-empty" class="task-progress-empty">아직 체크한 작업이 없습니다.</p>
+      </section>
+    </main>
+    <script>
+__SCRIPT__
+    </script>
+  </body>
+</html>

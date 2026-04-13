@@ -1,8 +1,0 @@
-{
-  "name": "generic-repo",
-  "type": "module",
-  "scripts": {
-    "dev": "node src/index.js",
-    "build": "tsc"
-  }
-}

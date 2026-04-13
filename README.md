@@ -1,49 +1,56 @@
 # Code Visualizer
 
-`code-visualizer` is a standalone skill-backed CLI that turns code changes and project structure into a local HTML report you can open from a localhost URL.
+`code-visualizer` is a pure Codex skill for non-developers and vibe coders.
 
-## What v1 does
+It explains:
 
-- explicit invocation only
-- local URL only
-- one CLI entry point with 4 modes
-- every report includes `쉬운 설명` and `기술 구조`
-- first-class adapter support for `paperclip`
+- what changed
+- what the project currently does
+- which parts of the code correspond to user-visible capabilities
+- technical terms in plain language first
 
 ## Install
 
-```bash
-pnpm install
-```
-
-## Run
+Option 1: install directly from GitHub with the skill installer.
 
 ```bash
-pnpm visualize --mode diff --repo /absolute/path/to/repo
-pnpm visualize --mode component --repo /absolute/path/to/repo --query ui
-pnpm visualize --mode project --repo /absolute/path/to/repo
-pnpm visualize --mode app --repo /absolute/path/to/repo
+python3 ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
+  --repo zenovis2-create/code-visualizer \
+  --path . \
+  --name code-visualizer
 ```
 
-The command prints a localhost URL like `http://127.0.0.1:43110/reports/<id>/index.html`.
+Option 2: clone into your local skills directory.
 
-## Skill trigger examples
+```bash
+git clone https://github.com/zenovis2-create/code-visualizer.git \
+  ~/.codex/skills/code-visualizer
+```
 
-- `방금 수정한 코드 시각화해줘`
-- `이 부분 구조를 그림으로 보여줘`
-- `프로젝트 전체를 시각화해줘`
-- `이 프로그램이 어떻게 동작하는지 시각화해줘`
+After install, restart Codex so the skill is picked up.
 
-## Repo layout
+## Trigger Examples
 
-- `src/`: collectors, adapters, analysis, renderer, server, CLI
-- `skills/code-visualizer/`: skill metadata and wrapper script
-- `viewer/`: HTML and CSS templates
-- `examples/`: example usage notes
-- `tests/`: behavior and failure coverage
+- `방금 만든 거 쉽게 설명해줘`
+- `지금 바뀐 걸 비개발자도 알게 설명해줘`
+- `이 프로젝트가 하는 일을 쉽게 보여줘`
+- `이 기능이 뭔지 쉽게 설명해줘`
 
-## Notes
+## Local Run
 
-- Reports are written to `reports/`
-- The server stays on `127.0.0.1:43110`
-- Generic repos are supported, but `paperclip` gets stronger grouping and entrypoint heuristics
+```bash
+./scripts/run-code-visualizer.sh \
+  --intent project-explainer \
+  --repo /absolute/path/to/repo \
+  --focus "비개발자에게 무엇을 설명해야 하는지"
+```
+
+Supported intents:
+
+- `change-explainer`
+- `project-explainer`
+- `feature-explainer`
+
+The script generates a localhost visual guide under:
+
+- `~/.codex/state/code-visualizer/reports`
