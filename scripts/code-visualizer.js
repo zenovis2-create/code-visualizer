@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
+import https from "node:https";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -45,6 +46,12 @@ function slugify(value) {
   const ascii = value.normalize("NFKD").replace(/[^\x00-\x7F]/g, "");
   const base = ascii.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   return base || "item";
+}
+
+function normalizeTermMemoryKey(repoName, term) {
+  const normalizedRepo = slugify(repoName || "repo");
+  const normalizedTerm = slugify(String(term || "").toLowerCase());
+  return `${normalizedRepo}:${normalizedTerm || "term"}`;
 }
 
 function escapeHtml(value) {
@@ -155,6 +162,55 @@ const CAPABILITY_RULES = [
   { id: "tests", label: "검증 장치", role: "망가지지 않았는지 확인하는 장치", patterns: [/^tests\//, /spec/i, /e2e/i, /qa/i] },
   { id: "skills", label: "스킬/설명 규칙", role: "에이전트가 어떻게 설명하고 행동할지 정하는 규칙", patterns: [/^skills\//, /^agents\//, /^references\//] }
 ];
+
+const RESULT_HINT_KEYWORDS = {
+  ui: ["dashboard", "settings", "onboarding", "landing", "home", "screen", "page", "ui", "modal", "form", "editor", "preview", "panel", "profile", "checkout", "login", "signup", "detail", "list", "view"],
+  server: ["api", "backend", "server", "worker", "queue", "session", "auth", "database", "db", "webhook", "route", "endpoint"],
+  packages: ["shared", "package", "packages", "common", "lib", "core", "utils"],
+  docs: ["readme", "docs", "guide", "manual", "spec", "plan", "proposal", "pdf"],
+  cli: ["cli", "script", "command", "tool", "runner", "report", "visualizer", "terminal"],
+  tests: ["test", "spec", "qa", "e2e", "integration", "snapshot"]
+};
+
+const WEAK_VISUAL_KEYWORDS = new Set([
+  "ui",
+  "view",
+  "page",
+  "screen",
+  "preview",
+  "list",
+  "detail",
+  "home",
+  "panel",
+  "common",
+  "core",
+  "lib",
+  "tool",
+  "report"
+]);
+
+const VISUAL_KEYWORD_LABELS = {
+  dashboard: "대시보드",
+  settings: "설정 화면",
+  onboarding: "시작 안내 화면",
+  landing: "소개 화면",
+  modal: "팝업 창",
+  form: "입력 폼",
+  editor: "편집 화면",
+  profile: "프로필 화면",
+  checkout: "결제 화면",
+  login: "로그인 화면",
+  signup: "가입 화면",
+  api: "API",
+  backend: "서버 처리",
+  auth: "인증",
+  database: "데이터베이스",
+  readme: "설명 문서",
+  docs: "문서",
+  cli: "실행 도구",
+  script: "스크립트",
+  test: "테스트"
+};
 
 function splitFileCandidates(cell) {
   return String(cell || "")
@@ -455,33 +511,309 @@ function buildNarrativeFromChanges({ intent, focus, repoName, changedFiles, capa
   };
 }
 
-function findResultConnections(repoPath, tree, focus, inputs = {}) {
+async function inspectResultUrl(urlValue) {
+  try {
+    const target = new URL(urlValue);
+    if (!["http:", "https:"].includes(target.protocol)) return null;
+    const isLocal =
+      target.hostname === "127.0.0.1" ||
+      target.hostname === "localhost" ||
+      target.hostname.endsWith(".local");
+    if (!isLocal) {
+      return {
+        pathname: target.pathname || "/",
+        hostname: target.hostname,
+        title: null
+      };
+    }
+
+    const transport = target.protocol === "https:" ? https : http;
+    const html = await new Promise((resolve) => {
+      const req = transport.get(target, (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => {
+          chunks.push(chunk);
+          const size = chunks.reduce((sum, item) => sum + item.length, 0);
+          if (size > 32768) req.destroy();
+        });
+        res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      });
+      req.setTimeout(2500, () => req.destroy());
+      req.on("error", () => resolve(""));
+    });
+
+    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    return {
+      pathname: target.pathname || "/",
+      hostname: target.hostname,
+      title: titleMatch ? titleMatch[1].replace(/\s+/g, " ").trim() : null
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeHintText(value, limit = 140) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit);
+}
+
+async function extractVisualTextHints(sourcePath) {
+  try {
+    if (!sourcePath || !(await pathExists(sourcePath))) return null;
+    if (/\.svg$/i.test(sourcePath)) {
+      const svg = await fs.readFile(sourcePath, "utf8");
+      const texts = Array.from(svg.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/gi))
+        .map((match) => match[1].replace(/<[^>]+>/g, " ").trim())
+        .filter(Boolean);
+      if (texts.length > 0) return normalizeHintText(texts.join(" · "));
+    }
+
+    try {
+      const ocr = execFileSync("tesseract", [sourcePath, "stdout", "--psm", "6"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      });
+      const normalized = normalizeHintText(ocr);
+      return normalized || null;
+    } catch {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+function deriveVisualKeywords(connection) {
+  const sources = [
+    connection.pageTitle || "",
+    connection.pathname || "",
+    connection.ocrText || "",
+    connection.sourcePath ? path.basename(connection.sourcePath) : ""
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  const bag = new Set();
+  for (const keywords of Object.values(RESULT_HINT_KEYWORDS)) {
+    for (const keyword of keywords) {
+      if (sources.includes(keyword)) bag.add(keyword);
+    }
+  }
+
+  const strong = Array.from(bag).filter((keyword) => !WEAK_VISUAL_KEYWORDS.has(keyword));
+  const weak = Array.from(bag).filter((keyword) => WEAK_VISUAL_KEYWORDS.has(keyword));
+  const byPriority = (left, right) => {
+    const leftIndex = sources.indexOf(left);
+    const rightIndex = sources.indexOf(right);
+    if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+    return right.length - left.length;
+  };
+  const curated = strong.length > 0
+    ? strong.sort(byPriority)
+    : weak.sort(byPriority);
+  return curated.slice(0, 4).map((keyword) => ({
+    raw: keyword,
+    label: VISUAL_KEYWORD_LABELS[keyword] || null
+  }));
+}
+
+function pickCapabilityForResult(connection, capabilities, changedFiles, focus) {
+  const basis = [
+    connection.title,
+    connection.description,
+    connection.url || "",
+    connection.pageTitle || "",
+    connection.ocrText || "",
+    connection.pathname || "",
+    connection.sourcePath || "",
+    focus || ""
+  ].join(" ").toLowerCase();
+
+  const changedSet = new Set(changedFiles);
+  const scored = capabilities.map((capability) => {
+    let score = 0;
+    const feature = String(capability.feature || "").toLowerCase();
+    const role = String(capability.role || "").toLowerCase();
+    const area = String(capability.area || "").toLowerCase();
+
+    if (basis.includes(feature)) score += 4;
+    if (basis.includes(area)) score += 3;
+    const keywordHits = (RESULT_HINT_KEYWORDS[capability.tone] || []).filter((keyword) => basis.includes(keyword));
+    score += keywordHits.length * 3;
+    const looksLikeVisualEvidence =
+      connection.type === "image" ||
+      basis.includes("screen") ||
+      basis.includes("ui") ||
+      basis.includes("page") ||
+      basis.includes("screenshot") ||
+      basis.includes("visual");
+
+    if (looksLikeVisualEvidence) {
+      if (capability.tone === "ui") score += 5;
+      if (capability.tone === "cli") score += 3;
+      if (capability.tone === "neutral") score += 2;
+    }
+    if (basis.includes("server") || basis.includes("api") || basis.includes("backend")) {
+      if (capability.tone === "server") score += 5;
+    }
+    if (basis.includes("readme") || basis.includes("docs") || basis.includes(".pdf")) {
+      if (capability.tone === "docs") score += 4;
+    }
+    if (basis.includes("script") || basis.includes("cli") || basis.includes("command")) {
+      if (capability.tone === "cli") score += 4;
+    }
+    if (basis.includes("shared") || basis.includes("lib") || basis.includes("package")) {
+      if (capability.tone === "packages") score += 4;
+    }
+    if (basis.includes("test") || basis.includes("qa") || basis.includes("spec")) {
+      if (capability.tone === "tests") score += 4;
+    }
+    if (basis.includes(role.split(",")[0])) score += 2;
+
+    if (looksLikeVisualEvidence && capability.tone === "docs" && !basis.includes("readme") && !basis.includes("docs") && !basis.includes(".pdf")) {
+      score -= 3;
+    }
+    if ((basis.includes("report") || basis.includes("visualizer") || basis.includes("result")) && capability.tone === "cli") {
+      score += 3;
+    }
+    if ((basis.includes("report") || basis.includes("explain") || basis.includes("skill")) && capability.tone === "neutral") {
+      score += 2;
+    }
+
+    const changedMatches = capability.files.filter((file) => changedSet.has(file));
+    score += changedMatches.length * 2;
+
+    return { capability, score, changedMatches, keywordHits };
+  });
+
+  scored.sort((left, right) => right.score - left.score);
+  const best = scored[0];
+  if (!best || best.score <= 0) {
+    return capabilities.find((item) => item.tone === "ui") || capabilities[0] || null;
+  }
+  return best.capability;
+}
+
+function looksLikeVisualConnection(connection, focus) {
+  const basis = [
+    connection.title,
+    connection.description,
+    connection.url || "",
+    connection.pageTitle || "",
+    connection.ocrText || "",
+    connection.pathname || "",
+    connection.sourcePath || "",
+    focus || ""
+  ].join(" ").toLowerCase();
+
+  return (
+    connection.type === "image" ||
+    basis.includes("screen") ||
+    basis.includes("dashboard") ||
+    basis.includes("settings") ||
+    basis.includes("onboarding") ||
+    basis.includes("landing") ||
+    basis.includes("page") ||
+    basis.includes("ui") ||
+    basis.includes("preview")
+  );
+}
+
+function attachResultMappings(connections, capabilities, changedFiles, focus) {
+  const hasUiCapability = capabilities.some((item) => item.tone === "ui");
+  return connections.map((connection) => {
+    if (connection.type === "note") return connection;
+    let capability = pickCapabilityForResult(connection, capabilities, changedFiles, focus);
+    if (!hasUiCapability && looksLikeVisualConnection(connection, focus)) {
+      capability = {
+        feature: "화면과 경험",
+        role: "사용자가 직접 보는 화면이나 결과물과 가장 가까운 부분",
+        files: changedFiles.filter((file) => /^assets\/(template\.html|style\.css)$/.test(file)).slice(0, 2),
+        tone: "ui"
+      };
+    }
+    if (!capability) return connection;
+    const prioritizedFiles = [
+      ...capability.files.filter((file) => changedFiles.includes(file)),
+      ...capability.files.filter((file) => !changedFiles.includes(file))
+    ].slice(0, 2);
+    return {
+      ...connection,
+      capabilityLabel: capability.feature,
+      capabilityRole: capability.role,
+      fileHints: prioritizedFiles,
+      visualKeywords: deriveVisualKeywords(connection)
+    };
+  });
+}
+
+async function findResultConnections(repoPath, tree, focus, inputs = {}) {
   const urls = [...extractUrls(focus), ...(inputs.resultUrls || [])];
   const imageCandidates = tree.filter((item) => isImagePath(item)).slice(0, 4);
-  const mappedImages = imageCandidates.map((item) => ({
-    type: "image",
-    title: path.basename(item),
-    description: "저장소 안에서 찾은 실제 화면/결과물 단서입니다.",
-    sourcePath: path.join(repoPath, item)
-  }));
-  const mappedUrls = urls.map((url, index) => ({
-    type: "link",
-    title: `실행 중 화면 ${index + 1}`,
-    description: "사용자가 준 실제 결과물 링크입니다.",
-    url
-  }));
-  const mappedScreenshots = (inputs.screenshotPaths || []).map((item, index) => ({
-    type: "image",
-    title: `스크린샷 ${index + 1}`,
-    description: "사용자가 직접 제공한 실제 화면 스크린샷입니다.",
-    sourcePath: item
-  }));
-  const mappedArtifacts = (inputs.artifactPaths || []).map((item, index) => ({
-    type: isImagePath(item) ? "image" : "file",
-    title: `결과물 ${index + 1}`,
-    description: "사용자가 직접 제공한 결과물 파일입니다.",
-    sourcePath: item
-  }));
+  const mappedImages = await Promise.all(
+    imageCandidates.map(async (item) => {
+      const sourcePath = path.join(repoPath, item);
+      const ocrText = await extractVisualTextHints(sourcePath);
+      return {
+        type: "image",
+        title: path.basename(item),
+        description: ocrText
+          ? `저장소 안에서 찾은 실제 화면/결과물 단서입니다. 읽어온 텍스트: ${ocrText}`
+          : "저장소 안에서 찾은 실제 화면/결과물 단서입니다.",
+        sourcePath,
+        ocrText
+      };
+    })
+  );
+  const mappedUrls = await Promise.all(
+    urls.map(async (url, index) => {
+      const inspected = await inspectResultUrl(url);
+      const hintParts = [];
+      if (inspected?.title) hintParts.push(`화면 제목: ${inspected.title}`);
+      if (inspected?.pathname) hintParts.push(`경로: ${inspected.pathname}`);
+      return {
+        type: "link",
+        title: `실행 중 화면 ${index + 1}`,
+        description: hintParts.length > 0 ? `사용자가 준 실제 결과물 링크입니다. ${hintParts.join(" · ")}` : "사용자가 준 실제 결과물 링크입니다.",
+        url,
+        pageTitle: inspected?.title || null,
+        pathname: inspected?.pathname || null,
+        hostname: inspected?.hostname || null
+      };
+    })
+  );
+  const mappedScreenshots = await Promise.all(
+    (inputs.screenshotPaths || []).map(async (item, index) => {
+      const ocrText = await extractVisualTextHints(item);
+      return {
+        type: "image",
+        title: `스크린샷 ${index + 1}`,
+        description: ocrText
+          ? `사용자가 직접 제공한 실제 화면 스크린샷입니다. 읽어온 텍스트: ${ocrText}`
+          : "사용자가 직접 제공한 실제 화면 스크린샷입니다.",
+        sourcePath: item,
+        ocrText
+      };
+    })
+  );
+  const mappedArtifacts = await Promise.all(
+    (inputs.artifactPaths || []).map(async (item, index) => {
+      const imageArtifact = isImagePath(item);
+      const ocrText = imageArtifact ? await extractVisualTextHints(item) : null;
+      return {
+        type: imageArtifact ? "image" : "file",
+        title: `결과물 ${index + 1}`,
+        description: ocrText
+          ? `사용자가 직접 제공한 결과물 파일입니다. 읽어온 텍스트: ${ocrText}`
+          : "사용자가 직접 제공한 결과물 파일입니다.",
+        sourcePath: item,
+        ocrText
+      };
+    })
+  );
 
   if (
     mappedImages.length === 0 &&
@@ -499,6 +831,152 @@ function findResultConnections(repoPath, tree, focus, inputs = {}) {
   }
 
   return [...mappedUrls, ...mappedScreenshots, ...mappedArtifacts, ...mappedImages];
+}
+
+function buildChangeReceipt(changedFiles, capabilities, resultConnections) {
+  const concreteResults = resultConnections.filter((item) => item.type !== "note");
+  return [
+    {
+      label: "바뀐 파일",
+      value: String(changedFiles.length || 0),
+      detail: changedFiles.length > 0 ? summarizeChangedPaths(changedFiles) : "최근 변경 파일이 아직 없습니다."
+    },
+    {
+      label: "관련 기능 묶음",
+      value: String(capabilities.length || 0),
+      detail: capabilities.map((item) => item.feature).slice(0, 4).join(", ") || "기능 묶음이 아직 없습니다."
+    },
+    {
+      label: "실제 결과 연결",
+      value: String(concreteResults.length || 0),
+      detail: concreteResults.length > 0 ? concreteResults.map((item) => item.title).join(", ") : "직접 연결된 화면/결과물은 아직 없습니다."
+    }
+  ];
+}
+
+function buildEvidenceSummary({ focus, changedFiles, resultConnections, latestCommit }) {
+  const sources = [];
+  if (focus) sources.push("사용자 요청");
+  if (changedFiles.length > 0) sources.push("git diff");
+  if (latestCommit) sources.push("최근 커밋");
+  if (resultConnections.some((item) => item.type !== "note")) sources.push("실제 결과물");
+  sources.push("현재 저장소 구조");
+
+  let level = "low";
+  if (sources.includes("git diff") && sources.includes("사용자 요청")) level = "medium";
+  if (sources.includes("git diff") && sources.includes("사용자 요청") && sources.includes("실제 결과물")) {
+    level = "high";
+  }
+
+  const labelMap = {
+    high: "근거 신뢰도 높음",
+    medium: "근거 신뢰도 중간",
+    low: "근거 신뢰도 기본"
+  };
+
+  return {
+    level,
+    label: labelMap[level],
+    detail: `이 설명은 ${sources.join(", ")}을 바탕으로 만들었습니다.`
+  };
+}
+
+function collectVisualKeywordPairs(resultConnections) {
+  const seen = new Set();
+  const pairs = [];
+  for (const connection of resultConnections) {
+    for (const keyword of connection.visualKeywords || []) {
+      if (!keyword?.raw || !keyword?.label || seen.has(keyword.raw)) continue;
+      seen.add(keyword.raw);
+      pairs.push(keyword);
+    }
+  }
+  return pairs;
+}
+
+function buildLearnedTerms(capabilities, changedFiles, resultConnections) {
+  const hints = [
+    {
+      term: "UI",
+      plain: "화면, 사용자가 보는 부분",
+      why: "화면 관련 파일이나 기능이 보일 때 가장 먼저 익혀두면 좋은 개념입니다."
+    },
+    {
+      term: "Server",
+      plain: "처리 규칙, 운영실",
+      why: "화면 뒤에서 실제 계산이나 규칙을 담당하는 부분을 이해할 때 필요합니다."
+    },
+    {
+      term: "Shared",
+      plain: "공통 부품",
+      why: "여러 기능이 함께 쓰는 로직을 볼 때 자주 만나는 개념입니다."
+    },
+    {
+      term: "CLI",
+      plain: "실행/관리 도구",
+      why: "터미널로 실행하거나 관리하는 흐름을 설명할 때 자주 나옵니다."
+    }
+  ];
+
+  const visualKeywordTerms = collectVisualKeywordPairs(resultConnections)
+    .slice(0, 2)
+    .map((keyword) => ({
+      term: keyword.raw,
+      plain: keyword.label,
+      why: "실제 화면이나 결과물에서 직접 읽은 단어라, 화면 의미와 코드 연결을 이해할 때 바로 도움이 됩니다."
+    }));
+
+  const active = hints.filter((item) => {
+    const lower = item.term.toLowerCase();
+    return changedFiles.some((file) => file.toLowerCase().includes(lower)) ||
+      capabilities.some((cap) => cap.feature.toLowerCase().includes(lower) || cap.role.toLowerCase().includes(item.plain.split(",")[0]));
+  });
+  return [...visualKeywordTerms, ...(active.length > 0 ? active : hints.slice(0, 3))]
+    .slice(0, 4);
+}
+
+function buildGuidanceCards(capabilities, resultConnections) {
+  const candidates = [
+    {
+      question: "방금 뭐가 달라졌는지 알고 싶어?",
+      answer: "변화 타임라인과 비개발자용 diff 뷰부터 보면 됩니다.",
+      href: "#timeline",
+      cta: "타임라인 보기"
+    },
+    {
+      question: "이 프로젝트가 지금 뭘 만드는지 알고 싶어?",
+      answer: "기능 지도와 이 프로젝트가 하는 일을 먼저 보면 됩니다.",
+      href: "#project-purpose",
+      cta: "프로젝트 이해 보기"
+    },
+    {
+      question: "어느 파일부터 열어야 할지 모르겠어?",
+      answer: "기능 지도에서 대표 파일을 눌러 바로 들어가면 됩니다.",
+      href: "#capabilities",
+      cta: "대표 파일 찾기"
+    }
+  ];
+
+  const visualKeyword = collectVisualKeywordPairs(resultConnections)[0];
+  if (visualKeyword) {
+    candidates.push({
+      question: `${visualKeyword.raw}가 어떤 화면 의미인지 알고 싶어?`,
+      answer: `${visualKeyword.raw}는 여기서 ${visualKeyword.label} 뜻으로 읽혔고, 결과물 연결 카드에서 관련 파일까지 같이 볼 수 있습니다.`,
+      href: "#result-connections",
+      cta: "화면 연결 보기"
+    });
+  }
+
+  if (capabilities.some((cap) => cap.feature.includes("화면"))) {
+    candidates.push({
+      question: "화면을 바꾸고 싶어?",
+      answer: "화면과 경험 기능 카드와 대표 파일부터 보면 됩니다.",
+      href: "#result-connections",
+      cta: "결과물 연결 보기"
+    });
+  }
+
+  return candidates.slice(0, 4);
 }
 
 async function readFiles(repoPath, filePaths) {
@@ -672,11 +1150,20 @@ function renderMainScript(reportId) {
   return `
 (() => {
   const pinKey = "code-visualizer:pins:${reportId}";
-  const progressPrefix = "code-visualizer:task:${reportId}:";
+  const termKey = "code-visualizer:term-memory";
   const pinList = document.getElementById("pin-board-list");
   const pinEmpty = document.getElementById("pin-board-empty");
   const progressList = document.getElementById("task-progress-list");
   const progressEmpty = document.getElementById("task-progress-empty");
+  const learnedSummary = document.getElementById("learned-term-summary");
+  const learnedSummaryNew = document.getElementById("learned-term-new");
+  const learnedSummarySeen = document.getElementById("learned-term-seen");
+  const heroLearnedSummary = document.getElementById("hero-learned-summary");
+  const heroLearnedNew = document.getElementById("hero-learned-new");
+  const heroLearnedSeen = document.getElementById("hero-learned-seen");
+  const heroLearnedGuide = document.getElementById("hero-learned-guide");
+  const heroLearnedGuideText = document.getElementById("hero-learned-guide-text");
+  const heroLearnedGuideLink = document.getElementById("hero-learned-guide-link");
 
   function readJson(key, fallback) {
     try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); } catch { return fallback; }
@@ -704,6 +1191,21 @@ function renderMainScript(reportId) {
     });
   }
 
+  function bindQuestionLinks() {
+    document.querySelectorAll(".question-link[href^='#']").forEach((link) => {
+      if (link.dataset.bound === "true") return;
+      link.dataset.bound = "true";
+      link.addEventListener("click", (event) => {
+        const href = link.getAttribute("href");
+        if (!href) return;
+        const target = document.querySelector(href);
+        if (!target) return;
+        event.preventDefault();
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+  }
+
   function renderPins() {
     if (!pinList || !pinEmpty) return;
     const items = readJson(pinKey, []);
@@ -719,6 +1221,51 @@ function renderMainScript(reportId) {
       }
     }
     bindPins();
+  }
+
+  function renderTermMemory() {
+    const seen = new Set(readJson(termKey, []));
+    const next = new Set(seen);
+    let newCount = 0;
+    let seenCount = 0;
+    document.querySelectorAll("[data-term-key]").forEach((card) => {
+      const key = card.getAttribute("data-term-key");
+      const badge = card.querySelector(".term-status");
+      if (!key || !badge) return;
+      if (seen.has(key)) {
+        badge.textContent = "전에 본 개념";
+        badge.classList.add("is-seen");
+        seenCount += 1;
+      } else {
+        badge.textContent = "이번에 새로 본 개념";
+        badge.classList.remove("is-seen");
+        newCount += 1;
+      }
+      next.add(key);
+    });
+    writeJson(termKey, Array.from(next));
+    if (learnedSummary && learnedSummaryNew && learnedSummarySeen) {
+      learnedSummary.hidden = false;
+      learnedSummaryNew.textContent = "이번에 새로 익힌 개념 " + newCount + "개";
+      learnedSummarySeen.textContent = "전에 본 개념 " + seenCount + "개";
+    }
+    if (heroLearnedSummary && heroLearnedNew && heroLearnedSeen) {
+      heroLearnedSummary.hidden = false;
+      heroLearnedNew.textContent = "새 개념 " + newCount + "개";
+      heroLearnedSeen.textContent = "익숙한 개념 " + seenCount + "개";
+    }
+    if (heroLearnedGuide && heroLearnedGuideText && heroLearnedGuideLink) {
+      heroLearnedGuide.hidden = false;
+      if (newCount > 0) {
+        heroLearnedGuideText.textContent = "이번 보고서에는 처음 보는 개념이 있으니 용어부터 보고 내려가는 편이 빠릅니다.";
+        heroLearnedGuideLink.textContent = "용어 먼저 보기";
+        heroLearnedGuideLink.setAttribute("href", "#learned-terms");
+      } else {
+        heroLearnedGuideText.textContent = "이미 익숙한 개념 위주라 바로 변화 설명과 결과 연결부터 봐도 됩니다.";
+        heroLearnedGuideLink.textContent = "바로 변화 보기";
+        heroLearnedGuideLink.setAttribute("href", "#before-after");
+      }
+    }
   }
 
   function renderProgress() {
@@ -752,6 +1299,8 @@ function renderMainScript(reportId) {
 
   renderPins();
   renderProgress();
+  renderTermMemory();
+  bindQuestionLinks();
 })();
 `.trim();
 }
@@ -1142,24 +1691,49 @@ async function writeReport(report) {
   const diffRows = report.diffRows
     .map((row) => `<tr><td>${escapeHtml(row.kind)}</td><td>${escapeHtml(row.item)}</td><td>${escapeHtml(row.files)}</td><td>${escapeHtml(row.why)}</td></tr>`)
     .join("");
+  const receiptCards = report.changeReceipt
+    .map((item) => `<article class="receipt-card"><p class="receipt-label">${escapeHtml(item.label)}</p><p class="receipt-value">${escapeHtml(item.value)}</p><p>${escapeHtml(item.detail)}</p></article>`)
+    .join("");
+  const evidenceBadge = `<span class="evidence-badge evidence-${escapeHtml(report.evidenceSummary.level)}">${escapeHtml(report.evidenceSummary.label)}</span>`;
+  const learnedTermCards = report.learnedTerms
+    .map((item) => `<article class="learn-card" data-term-key="${escapeHtml(normalizeTermMemoryKey(report.repoName, item.term))}"><div class="learn-card-head"><h3>${escapeHtml(item.term)}</h3><span class="term-status">이번에 새로 본 개념</span></div><p><strong>${escapeHtml(item.plain)}</strong></p><p>${escapeHtml(item.why)}</p></article>`)
+    .join("");
+  const guidanceCards = report.guidanceCards
+    .map((item) => `<article class="question-card"><h3>${escapeHtml(item.question)}</h3><p>${escapeHtml(item.answer)}</p>${item.href ? `<a class="question-link" href="${escapeHtml(item.href)}">${escapeHtml(item.cta || "바로 보기")}</a>` : ""}</article>`)
+    .join("");
   const resultCardsParts = [];
   for (const connection of report.resultConnections) {
+    const matchedFiles = (connection.fileHints || [])
+      .map((file) => {
+        const href = fileLinkMap.get(file);
+        return href ? `<a class="result-file-link" href="${escapeHtml(href)}">${escapeHtml(file)}</a>` : escapeHtml(file);
+      })
+      .join('<span class="file-separator">, </span>');
+    const keywordChips = (connection.visualKeywords || [])
+      .map((keyword) => {
+        const label = keyword.label ? `${keyword.raw} (${keyword.label})` : keyword.raw;
+        return `<span class="result-keyword">${escapeHtml(label)}</span>`;
+      })
+      .join("");
+    const matchMeta = connection.capabilityLabel
+      ? `<div class="result-meta"><p><strong>가장 가까운 기능:</strong> ${escapeHtml(connection.capabilityLabel)}</p>${keywordChips ? `<div class="result-keywords"><strong>핵심 단서:</strong> ${keywordChips}</div>` : ""}<p><strong>왜 이렇게 봤나:</strong> ${escapeHtml(connection.capabilityRole || "")}</p>${connection.pageTitle ? `<p><strong>읽어온 화면 제목:</strong> ${escapeHtml(connection.pageTitle)}</p>` : ""}${connection.pathname ? `<p><strong>읽어온 경로:</strong> ${escapeHtml(connection.pathname)}</p>` : ""}${connection.ocrText ? `<p><strong>읽어온 화면 텍스트:</strong> ${escapeHtml(connection.ocrText)}</p>` : ""}${matchedFiles ? `<p><strong>같이 볼 파일:</strong> ${matchedFiles}</p>` : ""}</div>`
+      : "";
     if (connection.type === "image" && connection.sourcePath) {
       const ext = path.extname(connection.sourcePath);
       const filename = `${slugify(connection.sourcePath)}-${Buffer.from(connection.sourcePath).toString("hex").slice(0, 8)}${ext}`;
       const targetPath = path.join(mediaDir, filename);
       await fs.copyFile(connection.sourcePath, targetPath);
-      resultCardsParts.push(`<article class="result-card"><h3>${escapeHtml(connection.title)}</h3><p>${escapeHtml(connection.description)}</p><img src="media/${escapeHtml(filename)}" alt="${escapeHtml(connection.title)}" /></article>`);
+      resultCardsParts.push(`<article class="result-card"><h3>${escapeHtml(connection.title)}</h3><p>${escapeHtml(connection.description)}</p>${matchMeta}<img src="media/${escapeHtml(filename)}" alt="${escapeHtml(connection.title)}" /></article>`);
     } else if (connection.type === "file" && connection.sourcePath) {
       const ext = path.extname(connection.sourcePath);
       const filename = `${slugify(connection.sourcePath)}-${Buffer.from(connection.sourcePath).toString("hex").slice(0, 8)}${ext || ".dat"}`;
       const targetPath = path.join(mediaDir, filename);
       await fs.copyFile(connection.sourcePath, targetPath);
-      resultCardsParts.push(`<article class="result-card"><h3>${escapeHtml(connection.title)}</h3><p>${escapeHtml(connection.description)}</p><p><a class="result-link" href="media/${escapeHtml(filename)}">${escapeHtml(path.basename(connection.sourcePath))}</a></p></article>`);
+      resultCardsParts.push(`<article class="result-card"><h3>${escapeHtml(connection.title)}</h3><p>${escapeHtml(connection.description)}</p>${matchMeta}<p><a class="result-link" href="media/${escapeHtml(filename)}">${escapeHtml(path.basename(connection.sourcePath))}</a></p></article>`);
     } else if (connection.type === "link" && connection.url) {
-      resultCardsParts.push(`<article class="result-card"><h3>${escapeHtml(connection.title)}</h3><p>${escapeHtml(connection.description)}</p><p><a class="result-link" href="${escapeHtml(connection.url)}">${escapeHtml(connection.url)}</a></p></article>`);
+      resultCardsParts.push(`<article class="result-card"><h3>${escapeHtml(connection.title)}</h3><p>${escapeHtml(connection.description)}</p>${matchMeta}<p><a class="result-link" href="${escapeHtml(connection.url)}">${escapeHtml(connection.url)}</a></p></article>`);
     } else {
-      resultCardsParts.push(`<article class="result-card"><h3>${escapeHtml(connection.title)}</h3><p>${escapeHtml(connection.description)}</p></article>`);
+      resultCardsParts.push(`<article class="result-card"><h3>${escapeHtml(connection.title)}</h3><p>${escapeHtml(connection.description)}</p>${matchMeta}</article>`);
     }
   }
   const resultCards = resultCardsParts.join("");
@@ -1168,15 +1742,20 @@ async function writeReport(report) {
     .replaceAll("__TITLE__", escapeHtml(report.title))
     .replaceAll("__STYLE__", style)
     .replaceAll("__LEAD__", escapeHtml(report.lead))
+    .replaceAll("__EVIDENCE_BADGE__", evidenceBadge)
+    .replaceAll("__EVIDENCE_DETAIL__", escapeHtml(report.evidenceSummary.detail))
     .replaceAll("__WHAT_NOW__", escapeHtml(report.whatNow))
     .replaceAll("__PROJECT_PURPOSE__", escapeHtml(report.projectPurpose))
     .replaceAll("__BEFORE__", escapeHtml(report.beforeText))
     .replaceAll("__NOW__", escapeHtml(report.nowText))
     .replaceAll("__USER_IMPACT_ITEMS__", userImpactItems)
+    .replaceAll("__CHANGE_RECEIPT_CARDS__", receiptCards)
     .replaceAll("__TIMELINE_CARDS__", timelineCards)
     .replaceAll("__DIFF_ROWS__", diffRows)
     .replaceAll("__CAPABILITY_ROWS__", capabilityRows)
     .replaceAll("__TERM_ROWS__", termRows)
+    .replaceAll("__LEARNED_TERM_CARDS__", learnedTermCards)
+    .replaceAll("__GUIDANCE_CARDS__", guidanceCards)
     .replaceAll("__RESULT_CONNECTIONS__", resultCards)
     .replaceAll("__FILE_LINK_ITEMS__", fileLinkItems)
     .replaceAll("__FEATURE_LINK_ITEMS__", featureLinkItems)
@@ -1231,7 +1810,21 @@ async function buildReport(intent, repoPath, focus, inputs = {}) {
     capabilities,
     latestCommit
   });
-  const resultConnections = findResultConnections(repoPath, tree, focus, inputs);
+  const resultConnections = attachResultMappings(
+    await findResultConnections(repoPath, tree, focus, inputs),
+    capabilities,
+    changedFiles,
+    focus
+  );
+  const changeReceipt = buildChangeReceipt(changedFiles, capabilities, resultConnections);
+  const learnedTerms = buildLearnedTerms(capabilities, changedFiles, resultConnections);
+  const guidanceCards = buildGuidanceCards(capabilities, resultConnections);
+  const evidenceSummary = buildEvidenceSummary({
+    focus,
+    changedFiles,
+    resultConnections,
+    latestCommit
+  });
   return {
     intent,
     repoName,
@@ -1250,6 +1843,10 @@ async function buildReport(intent, repoPath, focus, inputs = {}) {
     timeline: changeNarrative.timeline,
     diffRows: changeNarrative.diffRows,
     resultConnections,
+    changeReceipt,
+    evidenceSummary,
+    learnedTerms,
+    guidanceCards,
     capabilityRows: capabilities,
     representativeFiles,
     taskRows: buildTaskRows(capabilities)

@@ -14,19 +14,28 @@ __STYLE__
         <p class="eyebrow">Code Visualizer</p>
         <h1>__TITLE__</h1>
         <p class="lead">__LEAD__</p>
+        <div class="evidence-bar">__EVIDENCE_BADGE__<p>__EVIDENCE_DETAIL__</p></div>
+        <div id="hero-learned-summary" class="learn-summary hero-learn-summary" hidden>
+          <span id="hero-learned-new" class="learn-summary-chip"></span>
+          <span id="hero-learned-seen" class="learn-summary-chip is-seen"></span>
+        </div>
+        <div id="hero-learned-guide" class="hero-learn-guide" hidden>
+          <p id="hero-learned-guide-text"></p>
+          <a id="hero-learned-guide-link" class="question-link" href="#learned-terms"></a>
+        </div>
         <div class="hero-grid">
-          <section class="hero-card">
+          <section id="summary" class="hero-card">
             <h2>지금 한 일 한눈에</h2>
             <p>__WHAT_NOW__</p>
           </section>
-          <section class="hero-card">
+          <section id="project-purpose" class="hero-card">
             <h2>이 프로젝트가 하는 일</h2>
             <p>__PROJECT_PURPOSE__</p>
           </section>
         </div>
       </header>
 
-      <section class="section">
+      <section id="before-after" class="section">
         <h2>전에는 / 지금은</h2>
         <div class="compare-grid">
           <article class="compare before">
@@ -40,21 +49,28 @@ __STYLE__
         </div>
       </section>
 
-      <section class="section">
+      <section id="user-impact" class="section">
         <h2>사용자 입장에서 달라진 점</h2>
         <ul class="bullet-list">
           __USER_IMPACT_ITEMS__
         </ul>
       </section>
 
-      <section class="section">
+      <section id="change-receipt" class="section">
+        <h2>변경 영수증</h2>
+        <div class="receipt-grid">
+          __CHANGE_RECEIPT_CARDS__
+        </div>
+      </section>
+
+      <section id="timeline" class="section">
         <h2>변화 타임라인</h2>
         <div class="timeline-grid">
           __TIMELINE_CARDS__
         </div>
       </section>
 
-      <section class="section">
+      <section id="diff-view" class="section">
         <h2>비개발자용 diff 뷰</h2>
         <table class="diff-table">
           <thead>
@@ -71,7 +87,7 @@ __STYLE__
         </table>
       </section>
 
-      <section class="section">
+      <section id="capabilities" class="section">
         <h2>기능 지도</h2>
         <table class="feature-table">
           <thead>
@@ -88,7 +104,7 @@ __STYLE__
         </table>
       </section>
 
-      <section class="section">
+      <section id="term-translation" class="section">
         <h2>용어 번역</h2>
         <table class="term-table">
           <thead>
@@ -103,7 +119,25 @@ __STYLE__
         </table>
       </section>
 
-      <section class="section">
+      <section id="learned-terms" class="section">
+        <h2>이번에 배운 용어</h2>
+        <div id="learned-term-summary" class="learn-summary" hidden>
+          <span id="learned-term-new" class="learn-summary-chip"></span>
+          <span id="learned-term-seen" class="learn-summary-chip is-seen"></span>
+        </div>
+        <div class="learn-grid">
+          __LEARNED_TERM_CARDS__
+        </div>
+      </section>
+
+      <section id="guided-questions" class="section">
+        <h2>질문형 안내</h2>
+        <div class="question-grid">
+          __GUIDANCE_CARDS__
+        </div>
+      </section>
+
+      <section id="result-connections" class="section">
         <h2>실제 화면/결과물 연결</h2>
         <div class="result-grid">
           __RESULT_CONNECTIONS__

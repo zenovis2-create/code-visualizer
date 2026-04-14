@@ -8,6 +8,8 @@ It explains:
 - what the project currently does
 - which parts of the code correspond to user-visible capabilities
 - technical terms in plain language first
+- evidence confidence based on request, diff, repo, and result inputs
+- repeated term exposure so non-developers learn concepts over time
 
 ## Install
 
@@ -54,9 +56,23 @@ Supported intents:
 - `project-explainer`
 - `feature-explainer`
 
+Result evidence inputs:
+
+- `--result-url "http://localhost:3000"`
+- `--screenshot "/absolute/path/to/screen.png"`
+- `--artifact "/absolute/path/to/result.pdf"`
+
 The script generates a localhost visual guide under:
 
 - `~/.codex/state/code-visualizer/reports`
+
+The report now includes:
+
+- `변경 영수증`
+- `근거 신뢰도` 배지
+- `이번에 배운 용어` with seen/new concept memory
+- `질문형 안내` cards that jump to the right section
+- automatic `실제 화면/결과물 연결` matching to the closest capability and representative files
 
 ## Result Evidence Inputs
 
