@@ -42,7 +42,10 @@ After install, restart Codex so the skill is picked up.
 ./scripts/run-code-visualizer.sh \
   --intent project-explainer \
   --repo /absolute/path/to/repo \
-  --focus "비개발자에게 무엇을 설명해야 하는지"
+  --focus "비개발자에게 무엇을 설명해야 하는지" \
+  --result-url "http://localhost:3000" \
+  --screenshot "/absolute/path/to/screen.png" \
+  --artifact "/absolute/path/to/result.pdf"
 ```
 
 Supported intents:
@@ -54,3 +57,11 @@ Supported intents:
 The script generates a localhost visual guide under:
 
 - `~/.codex/state/code-visualizer/reports`
+
+## Result Evidence Inputs
+
+Use these when you want the report to connect code to a real result:
+
+- `--result-url`: running page or deployed URL
+- `--screenshot`: local screenshot/image path
+- `--artifact`: local output file such as PDF, HTML, or image

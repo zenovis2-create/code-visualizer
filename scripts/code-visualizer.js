@@ -19,10 +19,26 @@ function parseArgs(argv) {
     const key = argv[index];
     if (!key.startsWith("--")) continue;
     const value = argv[index + 1];
-    args[key.slice(2)] = value;
+    const normalized = key.slice(2);
+    if (args[normalized] === undefined) {
+      args[normalized] = value;
+    } else if (Array.isArray(args[normalized])) {
+      args[normalized].push(value);
+    } else {
+      args[normalized] = [args[normalized], value];
+    }
     index += 1;
   }
   return args;
+}
+
+function listArg(value) {
+  if (value === undefined) return [];
+  const raw = Array.isArray(value) ? value : [value];
+  return raw
+    .flatMap((item) => String(item).split(","))
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function slugify(value) {
@@ -52,6 +68,10 @@ async function pathExists(targetPath) {
 async function readTextIfExists(filePath) {
   if (!(await pathExists(filePath))) return null;
   return await fs.readFile(filePath, "utf8");
+}
+
+function isImagePath(filePath) {
+  return /\.(png|jpg|jpeg|webp|gif|svg)$/i.test(filePath);
 }
 
 async function collectTree(rootPath, current = rootPath, depth = 0, items = []) {
@@ -110,6 +130,10 @@ async function readRepoSummary(repoPath) {
     .map((item) => item.trim())
     .find((item) => item && !item.startsWith("#") && !item.startsWith("-") && !item.startsWith("```"));
   return line ?? null;
+}
+
+function extractUrls(text) {
+  return String(text || "").match(/https?:\/\/[^\s)]+/g) || [];
 }
 
 const TERM_ROWS = [
@@ -237,6 +261,246 @@ function selectRepresentativeFiles(intent, tree, changedFiles, focus) {
   return preferred.filter((item) => tree.includes(item)).slice(0, 6);
 }
 
+function readLatestCommit(repoPath) {
+  try {
+    const subject = execFileSync("git", ["-C", repoPath, "log", "-1", "--pretty=%s"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    return subject;
+  } catch {
+    return "";
+  }
+}
+
+function summarizeChangedPaths(paths, limit = 4) {
+  return paths.slice(0, limit).join(", ") || "대표 파일 없음";
+}
+
+function classifyChangeSet(changedFiles) {
+  const addedSkillRoots = changedFiles.filter((file) => /^(SKILL\.md|agents\/|assets\/|references\/|scripts\/)/.test(file));
+  const removedAppRoots = changedFiles.filter((file) => /^(src\/|tests\/|viewer\/|package\.json|pnpm-lock\.yaml|tsconfig\.json|vitest\.config\.ts)/.test(file));
+  return {
+    looksLikePureSkillRewrite: addedSkillRoots.length >= 3 && removedAppRoots.length >= 3,
+    addedSkillRoots,
+    removedAppRoots
+  };
+}
+
+function buildNarrativeFromChanges({ intent, focus, repoName, changedFiles, capabilities, latestCommit }) {
+  const changeSet = classifyChangeSet(changedFiles);
+  const changedCapabilities = capabilities.filter((cap) => cap.files.some((file) => changedFiles.includes(file)));
+  const changedPresentationLayer = changedFiles.some((file) => /^(assets\/template\.html|assets\/style\.css)$/.test(file));
+  const changedExplainerEngine = changedFiles.some((file) => /^scripts\/code-visualizer\.js$/.test(file));
+
+  if (changeSet.looksLikePureSkillRewrite) {
+    return {
+      whatNow: "이번 작업은 이 저장소를 개발용 앱 리포에서, GitHub에서 바로 받아 쓸 수 있는 순수 스킬 구조로 다시 정리한 것입니다.",
+      beforeText: "전에는 앱 개발용 파일, 테스트, 빌드 설정, 실행 코드가 한 저장소에 섞여 있어서 '받아서 바로 쓰는 스킬'처럼 보이지 않았습니다.",
+      nowText: "지금은 SKILL.md, agents, references, assets, scripts 중심으로 정리돼서 '설치 가능한 스킬'이라는 목적이 더 분명해졌습니다.",
+      userImpact: [
+        "다른 환경에서 GitHub로 내려받아 스킬처럼 설치하기 쉬워졌습니다.",
+        "비개발자 설명 규칙과 용어 번역이 별도 자료로 정리돼 이해가 더 쉬워졌습니다.",
+        "무거운 개발 리포보다, 실제 사용 목적이 바로 보이는 스킬 구조가 됐습니다."
+      ],
+      timeline: [
+        {
+          step: "1단계",
+          title: "개발용 구조를 걷어냄",
+          body: `${summarizeChangedPaths(changeSet.removedAppRoots)} 같은 앱형 파일 묶음을 정리했습니다.`
+        },
+        {
+          step: "2단계",
+          title: "순수 스킬 재구성",
+          body: `${summarizeChangedPaths(changeSet.addedSkillRoots)} 중심으로 설치 가능한 스킬 구조를 세웠습니다.`
+        },
+        {
+          step: "3단계",
+          title: "설명 엔진 연결",
+          body: latestCommit ? `최근 커밋 "${latestCommit}" 기준으로 실제 사용 흐름을 스크립트에 연결했습니다.` : "설명 생성 스크립트와 자산을 연결해 바로 실행 가능한 상태로 만들었습니다."
+        }
+      ],
+      diffRows: [
+        {
+          kind: "정리됨",
+          item: "앱형 개발 구조",
+          files: summarizeChangedPaths(changeSet.removedAppRoots),
+          why: "설치 목적과 개발 목적이 섞여 있던 구조를 줄였습니다."
+        },
+        {
+          kind: "추가됨",
+          item: "순수 스킬 구성요소",
+          files: summarizeChangedPaths(changeSet.addedSkillRoots),
+          why: "비개발자 설명과 설치 흐름에 필요한 핵심 요소만 남겼습니다."
+        },
+        {
+          kind: "사용자 체감 변화",
+          item: "GitHub에서 바로 받아 쓰는 스킬",
+          files: "SKILL.md, scripts/run-code-visualizer.sh",
+          why: "이제 이 저장소가 무엇인지 훨씬 빨리 이해할 수 있습니다."
+        }
+      ]
+    };
+  }
+
+  if (changedPresentationLayer && changedExplainerEngine) {
+    return {
+      whatNow: "이번 작업은 설명 화면과 해설 엔진을 함께 바꿔서, 비개발자가 변화와 구조를 더 직관적으로 이해하게 만드는 데 초점을 맞췄습니다.",
+      beforeText: "전에는 설명 화면이 있어도 무엇이 실제로 달라졌는지와 왜 중요한지가 파일 이름 수준에서만 느껴질 가능성이 컸습니다.",
+      nowText: "지금은 변화 타임라인, 비개발자용 diff 뷰, 결과물 연결 섹션을 통해 이번 변경의 스토리를 더 직접 읽을 수 있습니다.",
+      userImpact: [
+        "이번 변경이 화면/설명 구조 기준으로 어떻게 달라졌는지 더 빠르게 이해할 수 있습니다.",
+        "개발자식 diff 대신, 무엇이 추가되고 정리됐는지를 비개발자 언어로 따라갈 수 있습니다.",
+        "결과물 연결 섹션 덕분에 코드 변경과 설명 결과물의 관계를 더 쉽게 체감할 수 있습니다."
+      ],
+      timeline: [
+        {
+          step: "1단계",
+          title: "요청/목표 정리",
+          body: focus || "비개발자가 이번 변경을 바로 이해할 수 있도록 설명 방향을 다시 잡았습니다."
+        },
+        {
+          step: "2단계",
+          title: "설명 화면 재구성",
+          body: "assets/template.html, assets/style.css를 바꿔 변화 타임라인과 비개발자용 diff 뷰를 추가했습니다."
+        },
+        {
+          step: "3단계",
+          title: "해설 엔진 강화",
+          body: latestCommit ? `scripts/code-visualizer.js를 고쳐 최근 작업 "${latestCommit}" 이후의 변화 의미를 더 직접 읽게 했습니다.` : "scripts/code-visualizer.js를 고쳐 실제 변경 근거를 더 직접 반영하게 했습니다."
+        }
+      ],
+      diffRows: [
+        {
+          kind: "추가됨",
+          item: "설명용 시각 섹션",
+          files: "assets/template.html, assets/style.css",
+          why: "변화 타임라인과 비개발자용 diff 뷰가 첫 화면에서 보이게 했습니다."
+        },
+        {
+          kind: "연결됨",
+          item: "해설 생성 엔진",
+          files: "scripts/code-visualizer.js",
+          why: "실제 변경 파일과 설명 문구를 더 강하게 연결했습니다."
+        },
+        {
+          kind: "사용자 체감 변화",
+          item: "설명 읽기 경험",
+          files: "타임라인, diff 뷰, 결과물 연결",
+          why: "이번 작업이 무엇을 어떻게 바꿨는지 스토리처럼 따라가기 쉬워졌습니다."
+        }
+      ]
+    };
+  }
+
+  const topChanged = changedCapabilities.map((cap) => cap.feature).slice(0, 3);
+  const featureLabel = topChanged.join(", ") || capabilities[0]?.feature || "핵심 기능";
+  return {
+    whatNow:
+      intent === "change-explainer"
+        ? `이번 작업은 ${featureLabel} 쪽 코드가 실제로 바뀌어, 그 변화가 어떤 의미인지 설명하는 데 초점을 둡니다.`
+        : intent === "feature-explainer"
+          ? `이번 설명은 ${focus || featureLabel}가 사용자 입장에서 어떤 기능인지 풀어주는 데 초점을 둡니다.`
+          : `이번 설명은 ${repoName}이 현재 어떤 기능 묶음으로 이루어졌는지, 그리고 최근 변화가 어디에 몰려 있었는지 보여줍니다.`,
+    beforeText:
+      changedFiles.length > 0
+        ? `전에는 ${summarizeChangedPaths(changedFiles)} 같은 변화가 어떤 기능 의미를 가지는지 파일 이름만 보고 추측해야 했습니다.`
+        : "전에는 프로젝트를 폴더 이름만 보고 이해해야 했습니다.",
+    nowText:
+      changedFiles.length > 0
+        ? `지금은 ${featureLabel} 관점에서 어떤 파일이 바뀌었고, 그것이 사용자 입장에서 어떤 의미인지 먼저 읽을 수 있습니다.`
+        : "지금은 기술 구조보다 먼저, 이 프로젝트가 무엇을 만들고 있는지와 기능별 역할을 읽을 수 있습니다.",
+    userImpact: [
+      topChanged.length > 0 ? `${featureLabel}와 관련된 변화를 기능 기준으로 이해할 수 있습니다.` : "프로젝트의 기능 묶음을 비개발자 기준으로 먼저 이해할 수 있습니다.",
+      "파일 이름보다 기능 의미가 먼저 보여서 바이브코딩 결과를 따라가기 쉬워집니다.",
+      "필요하면 그 아래에서 대표 파일과 세부 설명으로 내려갈 수 있습니다."
+    ],
+    timeline: [
+      {
+        step: "1단계",
+        title: "요청/목표 정리",
+        body: focus || "사용자가 알고 싶어 한 변화나 기능 의미를 먼저 잡았습니다."
+      },
+      {
+        step: "2단계",
+        title: "실제 변경 확인",
+        body: changedFiles.length > 0 ? `${summarizeChangedPaths(changedFiles)} 파일 변화를 기준으로 설명을 묶었습니다.` : "최근 변경 대신 현재 구조를 기준으로 설명을 묶었습니다."
+      },
+      {
+        step: "3단계",
+        title: "기능 의미로 번역",
+        body: `${featureLabel}를 사용자 체감 관점으로 다시 설명했습니다.`
+      }
+    ],
+    diffRows: [
+      {
+        kind: "추가됨/바뀜",
+        item: featureLabel,
+        files: summarizeChangedPaths(changedFiles),
+        why: "실제 바뀐 파일을 기능 의미로 번역해 보여줍니다."
+      },
+      {
+        kind: "정리됨",
+        item: "설명 방식",
+        files: "기능 묶음 기준",
+        why: "파일 이름이 아니라 사용자가 느끼는 역할 기준으로 읽게 만듭니다."
+      },
+      {
+        kind: "사용자 체감 변화",
+        item: topChanged[0] || "프로젝트 이해 방식",
+        files: topChanged.join(", ") || "현재 기능 묶음",
+        why: "이번 작업이 어디에 영향을 주는지 더 빠르게 파악할 수 있습니다."
+      }
+    ]
+  };
+}
+
+function findResultConnections(repoPath, tree, focus, inputs = {}) {
+  const urls = [...extractUrls(focus), ...(inputs.resultUrls || [])];
+  const imageCandidates = tree.filter((item) => isImagePath(item)).slice(0, 4);
+  const mappedImages = imageCandidates.map((item) => ({
+    type: "image",
+    title: path.basename(item),
+    description: "저장소 안에서 찾은 실제 화면/결과물 단서입니다.",
+    sourcePath: path.join(repoPath, item)
+  }));
+  const mappedUrls = urls.map((url, index) => ({
+    type: "link",
+    title: `실행 중 화면 ${index + 1}`,
+    description: "사용자가 준 실제 결과물 링크입니다.",
+    url
+  }));
+  const mappedScreenshots = (inputs.screenshotPaths || []).map((item, index) => ({
+    type: "image",
+    title: `스크린샷 ${index + 1}`,
+    description: "사용자가 직접 제공한 실제 화면 스크린샷입니다.",
+    sourcePath: item
+  }));
+  const mappedArtifacts = (inputs.artifactPaths || []).map((item, index) => ({
+    type: isImagePath(item) ? "image" : "file",
+    title: `결과물 ${index + 1}`,
+    description: "사용자가 직접 제공한 결과물 파일입니다.",
+    sourcePath: item
+  }));
+
+  if (
+    mappedImages.length === 0 &&
+    mappedUrls.length === 0 &&
+    mappedScreenshots.length === 0 &&
+    mappedArtifacts.length === 0
+  ) {
+    return [
+      {
+        type: "note",
+        title: "현재 결과물은 이 설명 페이지 자체",
+        description: "이 저장소 안에서 별도 스크린샷이나 실행 URL은 찾지 못했습니다. 대신 이번 작업의 실제 결과물은 지금 보고 있는 설명 페이지와 그 안의 타임라인/diff/기능 지도 구성입니다. 실행 중인 화면 URL이나 스크린샷 파일이 있으면 여기서 코드와 화면을 직접 연결할 수 있습니다."
+      }
+    ];
+  }
+
+  return [...mappedUrls, ...mappedScreenshots, ...mappedArtifacts, ...mappedImages];
+}
+
 async function readFiles(repoPath, filePaths) {
   const results = [];
   for (const filePath of filePaths) {
@@ -251,6 +515,9 @@ async function readFiles(repoPath, filePaths) {
 }
 
 function describeProjectPurpose(repoName, readmeSummary, capabilities) {
+  if (repoName === "code-visualizer") {
+    return "code-visualizer은 방금 만든 변화와 현재 프로젝트 구조를 비개발자와 바이브코더도 이해할 수 있게 풀어 설명해 주는 Codex 스킬입니다.";
+  }
   if (readmeSummary) return readmeSummary;
   const labels = capabilities.map((item) => item.feature || item.label).slice(0, 3).join(", ");
   return `${repoName}은 ${labels}을 중심으로 돌아가는 프로젝트입니다.`;
@@ -811,8 +1078,10 @@ async function writeReport(report) {
   const reportDir = path.join(REPORTS_ROOT, reportId);
   const filesDir = path.join(reportDir, "files");
   const tasksDir = path.join(reportDir, "tasks");
+  const mediaDir = path.join(reportDir, "media");
   await fs.mkdir(filesDir, { recursive: true });
   await fs.mkdir(tasksDir, { recursive: true });
+  await fs.mkdir(mediaDir, { recursive: true });
 
   const fileLinkMap = new Map();
   for (const file of report.representativeFiles) {
@@ -867,6 +1136,33 @@ async function writeReport(report) {
       return `<li><a href="${escapeHtml(href || "#")}">${escapeHtml(task.row[0])}</a></li>`;
     })
     .join("");
+  const timelineCards = report.timeline
+    .map((item) => `<article class="timeline-card"><p class="timeline-step">${escapeHtml(item.step)}</p><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.body)}</p></article>`)
+    .join("");
+  const diffRows = report.diffRows
+    .map((row) => `<tr><td>${escapeHtml(row.kind)}</td><td>${escapeHtml(row.item)}</td><td>${escapeHtml(row.files)}</td><td>${escapeHtml(row.why)}</td></tr>`)
+    .join("");
+  const resultCardsParts = [];
+  for (const connection of report.resultConnections) {
+    if (connection.type === "image" && connection.sourcePath) {
+      const ext = path.extname(connection.sourcePath);
+      const filename = `${slugify(connection.sourcePath)}-${Buffer.from(connection.sourcePath).toString("hex").slice(0, 8)}${ext}`;
+      const targetPath = path.join(mediaDir, filename);
+      await fs.copyFile(connection.sourcePath, targetPath);
+      resultCardsParts.push(`<article class="result-card"><h3>${escapeHtml(connection.title)}</h3><p>${escapeHtml(connection.description)}</p><img src="media/${escapeHtml(filename)}" alt="${escapeHtml(connection.title)}" /></article>`);
+    } else if (connection.type === "file" && connection.sourcePath) {
+      const ext = path.extname(connection.sourcePath);
+      const filename = `${slugify(connection.sourcePath)}-${Buffer.from(connection.sourcePath).toString("hex").slice(0, 8)}${ext || ".dat"}`;
+      const targetPath = path.join(mediaDir, filename);
+      await fs.copyFile(connection.sourcePath, targetPath);
+      resultCardsParts.push(`<article class="result-card"><h3>${escapeHtml(connection.title)}</h3><p>${escapeHtml(connection.description)}</p><p><a class="result-link" href="media/${escapeHtml(filename)}">${escapeHtml(path.basename(connection.sourcePath))}</a></p></article>`);
+    } else if (connection.type === "link" && connection.url) {
+      resultCardsParts.push(`<article class="result-card"><h3>${escapeHtml(connection.title)}</h3><p>${escapeHtml(connection.description)}</p><p><a class="result-link" href="${escapeHtml(connection.url)}">${escapeHtml(connection.url)}</a></p></article>`);
+    } else {
+      resultCardsParts.push(`<article class="result-card"><h3>${escapeHtml(connection.title)}</h3><p>${escapeHtml(connection.description)}</p></article>`);
+    }
+  }
+  const resultCards = resultCardsParts.join("");
 
   const html = template
     .replaceAll("__TITLE__", escapeHtml(report.title))
@@ -877,8 +1173,11 @@ async function writeReport(report) {
     .replaceAll("__BEFORE__", escapeHtml(report.beforeText))
     .replaceAll("__NOW__", escapeHtml(report.nowText))
     .replaceAll("__USER_IMPACT_ITEMS__", userImpactItems)
+    .replaceAll("__TIMELINE_CARDS__", timelineCards)
+    .replaceAll("__DIFF_ROWS__", diffRows)
     .replaceAll("__CAPABILITY_ROWS__", capabilityRows)
     .replaceAll("__TERM_ROWS__", termRows)
+    .replaceAll("__RESULT_CONNECTIONS__", resultCards)
     .replaceAll("__FILE_LINK_ITEMS__", fileLinkItems)
     .replaceAll("__FEATURE_LINK_ITEMS__", featureLinkItems)
     .replaceAll("__SCRIPT__", renderMainScript(reportId));
@@ -906,7 +1205,7 @@ function buildTaskRows(capabilities) {
   return rows;
 }
 
-async function buildReport(intent, repoPath, focus) {
+async function buildReport(intent, repoPath, focus, inputs = {}) {
   const repoName = path.basename(repoPath);
   const tree = await collectTree(repoPath);
   const topDirs = await collectTopDirs(repoPath);
@@ -922,7 +1221,17 @@ async function buildReport(intent, repoPath, focus) {
   }));
   const readmeSummary = await readRepoSummary(repoPath);
   const projectPurpose = describeProjectPurpose(repoName, readmeSummary, capabilities);
+  const latestCommit = readLatestCommit(repoPath);
   const sections = buildSections(intent, repoName, focus, changedFiles, capabilities, projectPurpose);
+  const changeNarrative = buildNarrativeFromChanges({
+    intent,
+    focus,
+    repoName,
+    changedFiles,
+    capabilities,
+    latestCommit
+  });
+  const resultConnections = findResultConnections(repoPath, tree, focus, inputs);
   return {
     intent,
     repoName,
@@ -932,12 +1241,15 @@ async function buildReport(intent, repoPath, focus) {
         : intent === "feature-explainer"
           ? `${repoName}: 기능 설명`
           : `${repoName}: 프로젝트 이해`,
-    lead: sections.whatNow,
-    whatNow: sections.whatNow,
-    beforeText: sections.beforeText,
-    nowText: sections.nowText,
-    userImpact: sections.userImpact,
+    lead: changeNarrative.whatNow,
+    whatNow: changeNarrative.whatNow,
+    beforeText: changeNarrative.beforeText,
+    nowText: changeNarrative.nowText,
+    userImpact: changeNarrative.userImpact,
     projectPurpose: sections.projectPurpose,
+    timeline: changeNarrative.timeline,
+    diffRows: changeNarrative.diffRows,
+    resultConnections,
     capabilityRows: capabilities,
     representativeFiles,
     taskRows: buildTaskRows(capabilities)
@@ -1011,7 +1323,11 @@ async function main() {
     throw new Error(`Unsupported intent: ${intent}`);
   }
   await fs.mkdir(REPORTS_ROOT, { recursive: true });
-  const report = await buildReport(intent, repoPath, focus);
+  const report = await buildReport(intent, repoPath, focus, {
+    resultUrls: listArg(args["result-url"]),
+    screenshotPaths: listArg(args.screenshot).map((item) => path.resolve(item)),
+    artifactPaths: listArg(args.artifact).map((item) => path.resolve(item))
+  });
   const written = await writeReport(report);
   await ensureServer();
   const url = `http://127.0.0.1:${PORT}/reports/${written.reportId}/index.html`;

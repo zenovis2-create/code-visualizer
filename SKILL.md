@@ -35,13 +35,17 @@ Use:
 ./scripts/run-code-visualizer.sh \
   --intent <change-explainer|project-explainer|feature-explainer> \
   --repo <absolute-path> \
-  [--focus "..."]
+  [--focus "..."] \
+  [--result-url "http://localhost:3000"] \
+  [--screenshot "/absolute/path/to/screen.png"] \
+  [--artifact "/absolute/path/to/result.pdf"]
 ```
 
 ## What the Output Must Do
 
 - explain meaning before implementation
 - show `지금 한 일 한눈에`, `전에는 / 지금은`, `사용자 입장에서 달라진 점`, `이 프로젝트가 하는 일`, `기능 지도`, `용어 번역`
+- use `--result-url`, `--screenshot`, `--artifact` when you have real result evidence
 - translate technical words immediately when they appear
 - make technical drill-down secondary, under `더 깊게 보기` style sections
 - only mention future direction when there is explicit plan or todo evidence in the repo
